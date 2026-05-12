@@ -1,0 +1,45 @@
+{
+  "name": "ThaliMate - Daily Menu Broadcast",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 10 * * *" }] }
+      },
+      "id": "cron",
+      "name": "Every day 10:00 IST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.THALIMATE_API}}/api/admin/daily-menus?date={{ $now.toISO().slice(0,10) }}",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "fetch",
+      "name": "Fetch today menu",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.THALIMATE_API}}/api/admin/campaigns",
+        "jsonParameters": true,
+        "bodyParametersJson": "={ \"name\": \"Daily Menu {{ $now.toFormat('dd LLL') }}\", \"template\": \"🍱 Today's ThaliMate Menu:\\n\\n{{$json.menus[0].items.map(i => '• ' + i.menuItem.name).join('\\n')}}\\n\\nReply *Hi* to order!\", \"segment\": { \"marketingOptIn\": true } }"
+      },
+      "id": "campaign",
+      "name": "Create broadcast campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [720, 300]
+    }
+  ],
+  "connections": {
+    "Every day 10:00 IST": { "main": [[{ "node": "Fetch today menu", "type": "main", "index": 0 }]] },
+    "Fetch today menu": { "main": [[{ "node": "Create broadcast campaign", "type": "main", "index": 0 }]] }
+  }
+}

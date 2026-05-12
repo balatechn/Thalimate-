@@ -1,0 +1,439 @@
+// ThaliMate Prisma schema
+// Database: PostgreSQL
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================================
+// Auth & Staff
+// =====================================================================
+
+enum Role {
+  ADMIN
+  KITCHEN
+  DELIVERY
+  SUPPORT
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  name         String
+  passwordHash String
+  role         Role       @default(ADMIN)
+  active       Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  auditLogs    AuditLog[]
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+// =====================================================================
+// Customers
+// =====================================================================
+
+model Customer {
+  id            String         @id @default(cuid())
+  phone         String         @unique // E.164, e.g. +919876543210
+  name          String?
+  email         String?
+  marketingOptIn Boolean       @default(true)
+  blocked       Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  addresses     Address[]
+  orders        Order[]
+  conversations Conversation[]
+  feedback      Feedback[]
+  recipients    CampaignRecipient[]
+
+  @@index([createdAt])
+}
+
+model Address {
+  id          String    @id @default(cuid())
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  label       String?   // Home / Office
+  line1       String
+  line2       String?
+  landmark    String?
+  city        String
+  pincode     String
+  lat         Float?
+  lng         Float?
+  mapsUrl     String?
+  isDefault   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  orders      Order[]
+
+  @@index([customerId])
+}
+
+// =====================================================================
+// Menu
+// =====================================================================
+
+enum MealTime {
+  LUNCH
+  DINNER
+}
+
+enum DietType {
+  REGULAR
+  JAIN
+}
+
+enum MenuCategory {
+  SABZI
+  DAL
+  RICE
+  ROTI
+  SWEET
+  FARSAN
+  ADDON
+}
+
+model MenuItem {
+  id          String       @id @default(cuid())
+  name        String
+  description String?
+  category    MenuCategory
+  diet        DietType     @default(REGULAR)
+  price       Int          // in paise
+  imageUrl    String?
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  dailyMenuItems DailyMenuItem[]
+  planIncludes   MealPlanIncludedItem[]
+  orderItems     OrderItem[]
+
+  @@index([category, active])
+}
+
+model DailyMenu {
+  id        String     @id @default(cuid())
+  date      DateTime   // date only (UTC midnight; convert to IST in app)
+  mealTime  MealTime
+  diet      DietType
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  items DailyMenuItem[]
+
+  @@unique([date, mealTime, diet])
+  @@index([date])
+}
+
+model DailyMenuItem {
+  id          String    @id @default(cuid())
+  dailyMenuId String
+  dailyMenu   DailyMenu @relation(fields: [dailyMenuId], references: [id], onDelete: Cascade)
+  menuItemId  String
+  menuItem    MenuItem  @relation(fields: [menuItemId], references: [id])
+  soldOut     Boolean   @default(false)
+  position    Int       @default(0)
+
+  @@unique([dailyMenuId, menuItemId])
+}
+
+model MealPlan {
+  id          String   @id @default(cuid())
+  code        String   @unique // DAILY_DELIGHT | PREMIUM | SIGNATURE
+  name        String
+  description String?
+  basePrice   Int      // in paise
+  active      Boolean  @default(true)
+  // rules: { sabzi: 1, dal: 1, rice: 1, roti: 4, sweet: 0, farsan: 0 }
+  rules       Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  includedItems MealPlanIncludedItem[]
+  orders        Order[]
+}
+
+model MealPlanIncludedItem {
+  id         String   @id @default(cuid())
+  planId     String
+  plan       MealPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+
+  @@unique([planId, menuItemId])
+}
+
+// =====================================================================
+// Orders
+// =====================================================================
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  PREPARING
+  READY
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum OrderChannel {
+  WHATSAPP
+  ADMIN
+  WEB
+}
+
+model Order {
+  id                String       @id @default(cuid())
+  code              String       @unique // human-readable, e.g. TM-20260511-0001
+  customerId        String
+  customer          Customer     @relation(fields: [customerId], references: [id])
+  addressId         String?
+  address           Address?     @relation(fields: [addressId], references: [id])
+  planId            String?
+  plan              MealPlan?    @relation(fields: [planId], references: [id])
+
+  mealTime          MealTime
+  diet              DietType
+  channel           OrderChannel @default(WHATSAPP)
+  status            OrderStatus  @default(PENDING_PAYMENT)
+
+  subtotal          Int          // paise
+  taxAmount         Int          @default(0)
+  deliveryFee       Int          @default(0)
+  discount          Int          @default(0)
+  total             Int
+
+  couponCode        String?
+  notes             String?
+  scheduledFor      DateTime?
+  estimatedDelivery DateTime?
+  deliveredAt       DateTime?
+  cancelledAt       DateTime?
+  cancelReason      String?
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  items     OrderItem[]
+  payments  Payment[]
+  feedback  Feedback?
+
+  @@index([status, createdAt])
+  @@index([customerId])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItemId  String?
+  menuItem    MenuItem? @relation(fields: [menuItemId], references: [id])
+  name        String   // snapshot
+  category    MenuCategory
+  unitPrice   Int
+  quantity    Int      @default(1)
+  isAddOn     Boolean  @default(false)
+  total       Int      // unitPrice * quantity
+
+  @@index([orderId])
+}
+
+// =====================================================================
+// Payments
+// =====================================================================
+
+enum PaymentProvider {
+  RAZORPAY
+  UPI_QR
+  CASH
+}
+
+enum PaymentStatus {
+  CREATED
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id           String          @id @default(cuid())
+  orderId      String
+  order        Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  provider     PaymentProvider
+  status       PaymentStatus   @default(CREATED)
+  amount       Int
+  currency     String          @default("INR")
+
+  providerOrderId  String?
+  providerPaymentId String?
+  upiVpa       String?
+  qrPayload    String?
+  rawPayload   Json?
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  paidAt       DateTime?
+
+  @@index([orderId])
+  @@index([providerPaymentId])
+}
+
+// =====================================================================
+// Coupons
+// =====================================================================
+
+enum DiscountType {
+  PERCENT
+  FLAT
+}
+
+model Coupon {
+  id            String       @id @default(cuid())
+  code          String       @unique
+  description   String?
+  type          DiscountType
+  value         Int          // percent (0-100) or paise
+  minOrder      Int          @default(0)
+  maxDiscount   Int?
+  usageLimit    Int?
+  usedCount     Int          @default(0)
+  startsAt      DateTime?
+  endsAt        DateTime?
+  active        Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+}
+
+// =====================================================================
+// Conversations (WhatsApp FSM persistence)
+// =====================================================================
+
+enum ConversationState {
+  IDLE
+  GREETING
+  AWAITING_MEAL_TIME
+  AWAITING_PLAN
+  AWAITING_DIET
+  CUSTOMIZING
+  AWAITING_ADDRESS
+  AWAITING_CONFIRMATION
+  AWAITING_PAYMENT
+  COMPLETED
+}
+
+model Conversation {
+  id         String              @id @default(cuid())
+  customerId String
+  customer   Customer            @relation(fields: [customerId], references: [id])
+  state      ConversationState   @default(IDLE)
+  context    Json                @default("{}")
+  lastMsgAt  DateTime            @default(now())
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  messages ConversationMessage[]
+
+  @@index([customerId, state])
+}
+
+enum MsgDirection {
+  IN
+  OUT
+}
+
+model ConversationMessage {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      MsgDirection
+  body           String
+  payload        Json?
+  providerMsgId  String?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// =====================================================================
+// Marketing
+// =====================================================================
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  CANCELLED
+}
+
+model Campaign {
+  id           String         @id @default(cuid())
+  name         String
+  template     String         // message template with {{variables}}
+  segment      Json?          // filter criteria
+  scheduledAt  DateTime?
+  status       CampaignStatus @default(DRAFT)
+  sentCount    Int            @default(0)
+  failedCount  Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  recipients CampaignRecipient[]
+}
+
+model CampaignRecipient {
+  id         String    @id @default(cuid())
+  campaignId String
+  campaign   Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   Customer  @relation(fields: [customerId], references: [id])
+  sent       Boolean   @default(false)
+  failed     Boolean   @default(false)
+  error      String?
+  sentAt     DateTime?
+
+  @@unique([campaignId, customerId])
+}
+
+// =====================================================================
+// Feedback
+// =====================================================================
+
+model Feedback {
+  id         String   @id @default(cuid())
+  orderId    String   @unique
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  rating     Int      // 1-5
+  comment    String?
+  createdAt  DateTime @default(now())
+}

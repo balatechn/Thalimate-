@@ -1,0 +1,26 @@
+{
+  "name": "thalimate",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter \"./apps/*\" dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @thalimate/db generate",
+    "db:migrate": "pnpm --filter @thalimate/db migrate",
+    "db:seed": "pnpm --filter @thalimate/db seed",
+    "db:studio": "pnpm --filter @thalimate/db studio",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "prettier": "^3.3.3",
+    "@types/node": "^20.16.11"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "ThaliMate - Post-Delivery Feedback",
+  "nodes": [
+    {
+      "parameters": { "path": "thalimate/order-delivered", "options": {} },
+      "id": "hook",
+      "name": "Webhook: Order Delivered",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": { "amount": 2, "unit": "hours" },
+      "id": "wait",
+      "name": "Wait 2h",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.EVOLUTION_API_URL}}/message/sendText/{{$env.EVOLUTION_INSTANCE}}",
+        "headerParametersJson": "={ \"apikey\": \"{{$env.EVOLUTION_API_KEY}}\" }",
+        "jsonParameters": true,
+        "bodyParametersJson": "={ \"number\": \"{{ $json.phone }}\", \"text\": \"How was your meal? Reply 1-5 to rate ThaliMate. Thank you! 🙏\\nGoogle review: {{$env.GOOGLE_REVIEW_URL}}\" }"
+      },
+      "id": "send",
+      "name": "Send feedback request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [720, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Order Delivered": { "main": [[{ "node": "Wait 2h", "type": "main", "index": 0 }]] },
+    "Wait 2h": { "main": [[{ "node": "Send feedback request", "type": "main", "index": 0 }]] }
+  }
+}
