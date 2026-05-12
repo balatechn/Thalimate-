@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const parsed = dailyMenuSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-  const { date, mealTime, diet, active = true, itemIds } = parsed.data;
+  const { date, mealTime, diet, active = true, itemIds, soldOut = {} } = parsed.data;
   const day = new Date(date);
   day.setUTCHours(0, 0, 0, 0);
 
@@ -37,7 +37,12 @@ export async function POST(req: NextRequest) {
   // Replace items
   await prisma.dailyMenuItem.deleteMany({ where: { dailyMenuId: menu.id } });
   await prisma.dailyMenuItem.createMany({
-    data: itemIds.map((menuItemId, position) => ({ dailyMenuId: menu.id, menuItemId, position })),
+    data: itemIds.map((menuItemId, position) => ({
+      dailyMenuId: menu.id,
+      menuItemId,
+      position,
+      soldOut: soldOut[menuItemId] ?? false,
+    })),
   });
   return NextResponse.json({ menu });
 }

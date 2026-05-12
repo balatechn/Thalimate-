@@ -46,6 +46,7 @@ export const dailyMenuSchema = z.object({
   diet: z.enum(DIETS),
   active: z.boolean().optional(),
   itemIds: z.array(z.string()).min(1),
+  soldOut: z.record(z.string(), z.boolean()).optional(),
 });
 
 export const mealPlanSchema = z.object({
