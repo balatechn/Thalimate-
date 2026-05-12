@@ -48,14 +48,23 @@
     },
     {
       "parameters": {
-        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-        "text": "=🍱 *New Order!*\n\nOrder: `{{ $json.code }}`\nCustomer: {{ $json.customer?.phone }}\nTotal: ₹{{ ($json.total / 100).toFixed(2) }}\nPlan: {{ $json.mealPlan?.name }}\nMeal: {{ $json.mealTime }} ({{ $json.diet }})\n\nStatus: {{ $json.status }}",
-        "additionalFields": { "parse_mode": "Markdown" }
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ number: $env.ADMIN_WHATSAPP, text: '🍱 *New Order!*\n\nOrder: ' + $json.code + '\nCustomer: ' + ($json.customer?.phone ?? '—') + '\nTotal: ₹' + (($json.total ?? 0) / 100).toFixed(2) + '\nPlan: ' + ($json.mealPlan?.name ?? '—') + '\nMeal: ' + $json.mealTime + ' (' + $json.diet + ')\nStatus: ' + $json.status }) }}",
+        "options": {}
       },
-      "id": "telegram-notify",
-      "name": "Telegram: New Order",
-      "type": "n8n-nodes-base.telegram",
-      "typeVersion": 1,
+      "id": "whatsapp-notify",
+      "name": "WhatsApp: New Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
       "position": [900, 300]
     },
     {
@@ -73,8 +82,8 @@
   "connections": {
     "Webhook": { "main": [[{ "node": "Filter: order.created", "type": "main", "index": 0 }]] },
     "Filter: order.created": { "main": [[{ "node": "Fetch Order Details", "type": "main", "index": 0 }]] },
-    "Fetch Order Details": { "main": [[{ "node": "Telegram: New Order", "type": "main", "index": 0 }]] },
-    "Telegram: New Order": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+    "Fetch Order Details": { "main": [[{ "node": "WhatsApp: New Order", "type": "main", "index": 0 }]] },
+    "WhatsApp: New Order": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
   },
   "settings": { "executionOrder": "v1" },
   "meta": { "templateCredsSetupCompleted": false }
