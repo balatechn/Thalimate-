@@ -58,15 +58,11 @@ export default function DailyMenuEditor({ date: initialDate, slots: initialSlots
   function toggleItem(slotIndex: number, itemId: string) {
     setSlots((prev) => {
       const next = [...prev];
-      const slot = { ...next[slotIndex] };
-      if (slot.itemIds.includes(itemId)) {
-        slot.itemIds = slot.itemIds.filter((id) => id !== itemId);
-        const so = { ...slot.soldOut };
-        delete so[itemId];
-        slot.soldOut = so;
-      } else {
-        slot.itemIds = [...slot.itemIds, itemId];
-      }
+      const cur = next[slotIndex]!;
+      const itemIds = cur.itemIds ?? [];
+      const slot: SlotData = itemIds.includes(itemId)
+        ? { ...cur, itemIds: itemIds.filter((id) => id !== itemId), soldOut: (() => { const s = { ...cur.soldOut }; delete s[itemId]; return s; })() }
+        : { ...cur, itemIds: [...itemIds, itemId] };
       next[slotIndex] = slot;
       return next;
     });
@@ -75,8 +71,8 @@ export default function DailyMenuEditor({ date: initialDate, slots: initialSlots
   function toggleSoldOut(slotIndex: number, itemId: string) {
     setSlots((prev) => {
       const next = [...prev];
-      const slot = { ...next[slotIndex] };
-      slot.soldOut = { ...slot.soldOut, [itemId]: !slot.soldOut[itemId] };
+      const cur = next[slotIndex]!;
+      const slot: SlotData = { ...cur, soldOut: { ...(cur.soldOut ?? {}), [itemId]: !(cur.soldOut ?? {})[itemId] } };
       next[slotIndex] = slot;
       return next;
     });
@@ -85,13 +81,14 @@ export default function DailyMenuEditor({ date: initialDate, slots: initialSlots
   function toggleActive(slotIndex: number) {
     setSlots((prev) => {
       const next = [...prev];
-      next[slotIndex] = { ...next[slotIndex], active: !next[slotIndex].active };
+      const cur = next[slotIndex]!;
+      next[slotIndex] = { ...cur, active: !cur.active };
       return next;
     });
   }
 
   async function saveSlot(slotIndex: number) {
-    const slot = slots[slotIndex];
+    const slot = slots[slotIndex]!;
     const key = slot.slot;
     setSaving((p) => ({ ...p, [key]: true }));
     setSlotsError((p) => ({ ...p, [key]: '' }));
@@ -133,9 +130,9 @@ export default function DailyMenuEditor({ date: initialDate, slots: initialSlots
     const groups: Record<string, MenuItem[]> = {};
     for (const item of items) {
       if (!groups[item.category]) groups[item.category] = [];
-      groups[item.category].push(item);
+      groups[item.category]!.push(item);
     }
-    return CATEGORY_ORDER.filter((c) => groups[c]).map((c) => ({ category: c, items: groups[c] }));
+    return CATEGORY_ORDER.filter((c) => groups[c]).map((c) => ({ category: c, items: groups[c]! }));
   }
 
   return (

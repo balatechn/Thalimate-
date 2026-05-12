@@ -119,8 +119,8 @@ export default async function AdminHome() {
                 )}
                 {recentOrders.map((order) => {
                   const itemSummary = order.items
-                    .map((i) => `${i.quantity}× ${i.menuItem.name}`)
-                    .join(', ') + (order.items.length < (order as { _count?: { items: number } })._count?.items ? '…' : '');
+                    .map((i) => `${i.quantity}× ${i.menuItem?.name ?? '?'}`)
+                    .join(', ') + ((order.items.length < ((order as { _count?: { items: number } })._count?.items ?? order.items.length)) ? '…' : '');
                   const time = new Date(order.createdAt).toLocaleTimeString('en-IN', {
                     hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
                   });

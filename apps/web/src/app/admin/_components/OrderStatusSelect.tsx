@@ -11,6 +11,7 @@ const STATUSES = [
   'OUT_FOR_DELIVERY',
   'DELIVERED',
   'CANCELLED',
+  'REFUNDED',
 ] as const;
 
 type OrderStatus = (typeof STATUSES)[number];
@@ -23,6 +24,7 @@ const STATUS_COLORS: Record<OrderStatus, string> = {
   OUT_FOR_DELIVERY:'bg-orange-100 text-orange-800 border-orange-300',
   DELIVERED:       'bg-green-100 text-green-800 border-green-300',
   CANCELLED:       'bg-gray-100 text-gray-600 border-gray-300',
+  REFUNDED:        'bg-red-100 text-red-700 border-red-300',
 };
 
 export function OrderStatusSelect({

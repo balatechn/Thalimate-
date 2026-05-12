@@ -28,9 +28,9 @@ export default async function MenuPage() {
               <p className="font-medium truncate">{it.name}</p>
               {it.description && <p className="text-xs text-muted-foreground mt-0.5 truncate">{it.description}</p>}
               <div className="flex flex-wrap gap-2 mt-1">
-                <Badge variant="outline">{it.category}</Badge>
-                <Badge variant="secondary">{it.diet}</Badge>
-                {!it.active && <Badge variant="destructive">Inactive</Badge>}
+                <Badge className="border-primary/30 text-primary">{it.category}</Badge>
+                <Badge className="bg-secondary text-secondary-foreground">{it.diet}</Badge>
+                {!it.active && <Badge className="bg-destructive/10 text-destructive border-destructive/30">Inactive</Badge>}
               </div>
             </div>
             <div className="flex flex-col items-end gap-2 ml-3 shrink-0">

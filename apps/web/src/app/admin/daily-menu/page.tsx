@@ -49,7 +49,7 @@ export default async function DailyMenuPage({
         <h1 className="text-3xl font-bold">Daily Menu</h1>
         <p className="text-muted-foreground mt-1">Configure the menu for each meal slot and diet type.</p>
       </div>
-      <DailyMenuEditor date={dateStr} slots={slotData} allItems={allItems} />
+      <DailyMenuEditor date={dateStr ?? ''} slots={slotData} allItems={allItems} />
     </div>
   );
 }
