@@ -1,9 +1,17 @@
-import { formatINR } from '@thalimate/shared';
+import { formatINR, DEFAULT_DELIVERY_FEE } from '@thalimate/shared';
 import type { MenuSection } from './fsm';
+import type { SavedAddressLite } from '@thalimate/shared';
 
 export const t = {
-  greeting: (name?: string) =>
-    `Welcome to *ThaliMate* 🍱${name ? `\nHi ${name}!` : ''}\n\nPlease choose your meal type:\n\n1️⃣ Lunch\n2️⃣ Dinner\n\nReply with *1* or *2*.`,
+  askName: () =>
+    `Welcome to *ThaliMate* 🍱\n\nI don't think we've met before! 😊\nWhat's your name?`,
+
+  greeting: (name?: string, isReturning?: boolean) => {
+    const welcome = isReturning
+      ? `Welcome back, *${name}*! 👋`
+      : `Hi *${name}*, welcome to *ThaliMate* 🍱`;
+    return `${welcome}\n\nPlease choose your meal type:\n\n1️⃣ Lunch\n2️⃣ Dinner\n\nReply with *1* or *2*.`;
+  },
 
   askPlan: (plans: Array<{ name: string; basePrice: number }>) => {
     const nums = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
@@ -41,18 +49,35 @@ export const t = {
     addedNames: string[],
     lines: Array<{ name: string; qty: number; free: boolean }>,
     extraPaise: number,
+    deliveryFee?: number,
   ) => {
-    const addedStr = addedNames.length ? `✅ Added: ${addedNames.join(', ')}\n\n` : '';
+    const changedStr = addedNames.length ? `✅ ${addedNames.join(', ')}\n\n` : '';
     const basket =
       lines.length === 0
         ? '_(empty)_'
         : lines.map((l) => `  • ${l.name} ×${l.qty}${l.free ? ' ✓' : ''}`).join('\n');
-    const extraNote = extraPaise > 0 ? `\n💰 Extra add-ons: *+${formatINR(extraPaise)}*` : '';
+    const extraNote = extraPaise > 0 ? `\n💰 Add-ons: *+${formatINR(extraPaise)}*` : '';
+    const fee = deliveryFee ?? DEFAULT_DELIVERY_FEE;
+    const delivNote = fee > 0 ? `\n🛵 Delivery: *+${formatINR(fee)}*` : `\n🛵 Free delivery`;
     return (
-      `${addedStr}*Your basket:*\n${basket}${extraNote}\n\n` +
-      `Type more numbers, *done* when finished, or *back* to change plan.`
+      `${changedStr}*Your basket:*\n${basket}${extraNote}${delivNote}\n\n` +
+      `Type more numbers, *menu* to see menu, *done* when finished, *remove N* to remove.`
     );
   },
+
+  askAddressChoice: (addresses: SavedAddressLite[]) => {
+    const nums = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
+    const list = addresses
+      .map((a, i) => `${nums[i] ?? `${i + 1}.`} ${a.label ? `*${a.label}* — ` : ''}${a.line1}, ${a.city} – ${a.pincode}`)
+      .join('\n');
+    return (
+      `📍 *Choose delivery address:*\n\n${list}\n${nums[addresses.length] ?? `${addresses.length + 1}.`} Enter a new address\n\n` +
+      `Reply with the number or *new* to enter a different address.`
+    );
+  },
+
+  askNotes: () =>
+    `📝 Any *special instructions*?\n_(e.g. extra spicy, no onion, gate code)_\n\nOr reply *skip* if none.`,
 
   askAddress: () =>
     `📍 Please share your *delivery address*:\n\n_Format:_\n_Name_\n_House / Flat, Street_\n_Landmark_\n_City – Pincode_`,
@@ -65,21 +90,28 @@ export const t = {
     address: string;
     basePrice: number;
     extraPrice: number;
+    deliveryFee: number;
     total: number;
+    notes?: string;
+    estimatedMins?: number;
   }) => {
     const itemLines = params.items
       .map((i) => ` • ${i.name} ×${i.qty}${i.addonPrice ? ` (+${formatINR(i.addonPrice)})` : ''}`)
       .join('\n');
+    const eta = params.estimatedMins ? `\n⏱️ Est. delivery: *~${params.estimatedMins} mins*` : '';
+    const notesLine = params.notes ? `\n📝 Notes: _${params.notes}_` : '';
     return (
       `*📋 Order Summary*\n\n` +
-      `🍱 Plan: *${params.plan}* (${params.mealTime}, ${params.diet})\n` +
-      `🌿 Diet: ${params.diet}\n\n` +
+      `🍱 Plan: *${params.plan}*\n` +
+      `⏰ Meal: ${params.mealTime}  🌿 Diet: ${params.diet}\n\n` +
       `*Items:*\n${itemLines}\n\n` +
-      `Deliver to:\n${params.address}\n\n` +
-      `Base price: ${formatINR(params.basePrice)}\n` +
-      (params.extraPrice > 0 ? `Add-ons: +${formatINR(params.extraPrice)}\n` : '') +
+      `📍 Deliver to:\n${params.address}${notesLine}${eta}\n\n` +
+      `Base price:  ${formatINR(params.basePrice)}\n` +
+      (params.extraPrice > 0 ? `Add-ons:     +${formatINR(params.extraPrice)}\n` : '') +
+      (params.deliveryFee > 0 ? `Delivery:    +${formatINR(params.deliveryFee)}\n` : `Delivery:    FREE\n`) +
+      `──────────────────\n` +
       `*Total: ${formatINR(params.total)}*\n\n` +
-      `Reply *YES* to confirm, *EDIT* to change, or *CANCEL* to abort.`
+      `Reply *YES* to confirm, *EDIT* to change items, *ADDRESS* to change address, or *CANCEL* to abort.`
     );
   },
 

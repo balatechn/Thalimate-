@@ -1,7 +1,6 @@
 import {
   prisma,
   type ConversationState,
-  type DailyMenu,
   type MenuItem,
   type Customer,
   MealTime,
@@ -14,7 +13,13 @@ import {
   type FsmState,
   evolutionFromEnv,
 } from '@thalimate/whatsapp';
-import { todayISTDateOnly, type ConversationContext } from '@thalimate/shared';
+import {
+  todayISTDateOnly,
+  DEFAULT_DELIVERY_FEE,
+  FREE_DELIVERY_THRESHOLD,
+  type ConversationContext,
+  type SavedAddressLite,
+} from '@thalimate/shared';
 import { createOrder } from './orders';
 import { logger } from './logger';
 import { buildUpiUrl, upiQrPngBuffer } from './upi';
@@ -34,6 +39,25 @@ interface IncomingMessage {
 export async function handleIncoming(msg: IncomingMessage): Promise<void> {
   const { from, text } = msg;
   const customer = await upsertCustomer(from);
+
+  // Check if returning customer (has any past orders)
+  const [orderCount, savedAddresses] = await Promise.all([
+    prisma.order.count({ where: { customerId: customer.id } }),
+    prisma.address.findMany({
+      where: { customerId: customer.id },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      take: 5,
+    }),
+  ]);
+  const isReturning = orderCount > 0;
+  const savedAddressesLite: SavedAddressLite[] = savedAddresses.map((a) => ({
+    id: a.id,
+    label: a.label,
+    line1: a.line1,
+    city: a.city,
+    pincode: a.pincode,
+  }));
+
   const conv = await prisma.conversation.upsert({
     where: { id: await getOrCreateConvId(customer.id) },
     update: { lastMsgAt: new Date() },
@@ -66,20 +90,25 @@ export async function handleIncoming(msg: IncomingMessage): Promise<void> {
     }
   }
 
-  // Build menu for any state that may transition into CUSTOMIZING (AWAITING_DIET)
-  // or that is already browsing (CUSTOMIZING, AWAITING_CONFIRMATION)
+  // Build menu for any state that may need it
   let menuSections: FsmInput['menuSections'] | undefined;
-  if (['AWAITING_DIET', 'CUSTOMIZING', 'AWAITING_CONFIRMATION'].includes(fsmState)) {
+  if (['AWAITING_DIET', 'CUSTOMIZING', 'AWAITING_CONFIRMATION', 'AWAITING_ADDRESS_CHOICE', 'AWAITING_ADDRESS'].includes(fsmState)) {
     menuSections = await buildMenuSections(ctx, planRules);
   }
+
+  // Compute estimated delivery fee for display
+  const deliveryFee = FREE_DELIVERY_THRESHOLD > 0 ? DEFAULT_DELIVERY_FEE : 0;
 
   const fsmInput: FsmInput = {
     text,
     state: fsmState,
     context: ctx,
     customerName: customer.name ?? undefined,
+    isReturning,
+    savedAddresses: savedAddressesLite,
     menuSections,
     planRules,
+    deliveryFee,
     plans: plans.map((p) => ({ id: p.id, code: p.code, name: p.name, basePrice: p.basePrice })),
   };
 
@@ -93,6 +122,12 @@ export async function handleIncoming(msg: IncomingMessage): Promise<void> {
 
   // Execute side-effect actions
   await executeAction(out, customer, conv.id);
+
+  // If we just transitioned into AWAITING_CONFIRMATION from AWAITING_NOTES,
+  // send the full order summary as a follow-up (after the "Preparing..." reply).
+  if (out.nextState === 'AWAITING_CONFIRMATION' && fsmState === 'AWAITING_NOTES') {
+    await sendConfirmationSummary(out.context as ConversationContext, from, conv.id);
+  }
 
   // Send reply
   const evo = evolutionFromEnv();
@@ -115,16 +150,32 @@ async function executeAction(out: FsmOutput, customer: Customer, conversationId:
   if (!out.action) return;
 
   switch (out.action.kind) {
+    case 'SAVE_CUSTOMER_NAME': {
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: { name: out.action.name },
+      });
+      break;
+    }
+
     case 'SAVE_ADDRESS': {
       const raw = out.action.raw;
+      const parsed = parseAddressText(raw);
       const address = await prisma.address.create({
         data: {
           customerId: customer.id,
-          line1: raw.slice(0, 200),
-          city: 'Unknown',
-          pincode: extractPincode(raw) ?? '000000',
+          line1: parsed.line1,
+          line2: parsed.line2,
+          landmark: parsed.landmark,
+          city: parsed.city,
+          pincode: parsed.pincode,
           isDefault: true,
         },
+      });
+      // Clear default on older addresses
+      await prisma.address.updateMany({
+        where: { customerId: customer.id, id: { not: address.id } },
+        data: { isDefault: false },
       });
       const ctx = out.context;
       ctx.addressId = address.id;
@@ -132,9 +183,22 @@ async function executeAction(out: FsmOutput, customer: Customer, conversationId:
         where: { id: conversationId },
         data: { context: ctx as object },
       });
-
-      // Send confirmation summary as a follow-up message
       await sendConfirmationSummary(ctx, customer.phone, conversationId);
+      break;
+    }
+
+    case 'USE_SAVED_ADDRESS': {
+      // Mark as default, set in context
+      await prisma.address.updateMany({
+        where: { customerId: customer.id },
+        data: { isDefault: false },
+      });
+      await prisma.address.update({
+        where: { id: out.action.addressId },
+        data: { isDefault: true },
+      });
+      // ctx.addressId is already set by FSM
+      await sendConfirmationSummary(out.context, customer.phone, conversationId);
       break;
     }
 
@@ -145,10 +209,9 @@ async function executeAction(out: FsmOutput, customer: Customer, conversationId:
       const plan = await prisma.mealPlan.findUnique({ where: { code: ctx.planCode } });
       if (!plan) return;
 
-      const lines = Object.entries(ctx.selections).map(([menuItemId, quantity]) => ({
-        menuItemId,
-        quantity,
-      }));
+      const lines = Object.entries(ctx.selections)
+        .filter(([, qty]) => qty > 0)
+        .map(([menuItemId, quantity]) => ({ menuItemId, quantity }));
 
       const order = await createOrder({
         customerId: customer.id,
@@ -157,15 +220,16 @@ async function executeAction(out: FsmOutput, customer: Customer, conversationId:
         mealTime: ctx.mealTime,
         diet: ctx.diet,
         lines,
+        notes: ctx.notes,
+        couponCode: ctx.couponCode,
       });
 
-      ctx.draftOrderId = order.id;
+      const updatedCtx = { ...ctx, draftOrderId: order.id };
       await prisma.conversation.update({
         where: { id: conversationId },
-        data: { context: ctx as object },
+        data: { context: updatedCtx as object },
       });
 
-      // Generate payment
       await createPaymentForOrder(order.id, customer.phone);
       await enqueueNotification({ kind: 'order.created', orderId: order.id });
       break;
@@ -182,7 +246,7 @@ async function executeAction(out: FsmOutput, customer: Customer, conversationId:
     }
 
     case 'CAPTURE_FEEDBACK': {
-      // Implemented elsewhere
+      // Handled elsewhere via post-delivery webhook
       break;
     }
   }
@@ -257,7 +321,9 @@ async function createPaymentForOrder(orderId: string, customerPhone: string): Pr
 
 /**
  * Build and send the order confirmation summary message.
- * Called after SAVE_ADDRESS so the customer sees a full summary before confirming.
+ * Called after address is set (SAVE_ADDRESS or USE_SAVED_ADDRESS actions).
+ * Notes are captured in the next AWAITING_NOTES state before this is triggered.
+ * We also send the summary when the customer enters notes (AWAITING_NOTES → AWAITING_CONFIRMATION).
  */
 async function sendConfirmationSummary(
   ctx: ConversationContext,
@@ -274,7 +340,7 @@ async function sendConfirmationSummary(
     if (!plan || !address) return;
 
     const selections = ctx.selections ?? {};
-    const menuItemIds = Object.keys(selections);
+    const menuItemIds = Object.keys(selections).filter((k) => (selections[k] ?? 0) > 0);
     if (menuItemIds.length === 0) return;
 
     const menuItems = await prisma.menuItem.findMany({ where: { id: { in: menuItemIds } } });
@@ -286,6 +352,7 @@ async function sendConfirmationSummary(
 
     const summaryItems: Array<{ name: string; qty: number; addonPrice?: number }> = [];
     for (const [id, qty] of Object.entries(selections)) {
+      if (!qty) continue;
       const item = itemMap.get(id);
       if (!item) continue;
       const cat = item.category.toLowerCase();
@@ -299,7 +366,10 @@ async function sendConfirmationSummary(
       summaryItems.push({ name: item.name, qty, addonPrice: addonCost > 0 ? addonCost : undefined });
     }
 
-    const total = plan.basePrice + extraPaise;
+    const subtotal = plan.basePrice + extraPaise;
+    const deliveryFee = subtotal >= FREE_DELIVERY_THRESHOLD ? 0 : DEFAULT_DELIVERY_FEE;
+    const total = subtotal + deliveryFee;
+
     const addressStr = [address.line1, address.line2, address.landmark, address.city, address.pincode]
       .filter(Boolean)
       .join(', ');
@@ -311,9 +381,12 @@ async function sendConfirmationSummary(
       mealTime: ctx.mealTime,
       items: summaryItems,
       address: addressStr,
+      notes: ctx.notes,
       basePrice: plan.basePrice,
       extraPrice: extraPaise,
+      deliveryFee,
       total,
+      estimatedMins: 45,
     });
 
     const evo = evolutionFromEnv();
@@ -386,12 +459,43 @@ async function buildMenuSections(
     }));
 }
 
-function extractPincode(raw: string): string | null {
-  const m = raw.match(/\b(\d{6})\b/);
-  return m?.[1] ?? null;
+/**
+ * Parse multi-line address text into structured fields.
+ * Expected format (from bot prompt):
+ *   Name
+ *   House / Flat, Street
+ *   Landmark
+ *   City – Pincode
+ */
+function parseAddressText(raw: string): {
+  line1: string;
+  line2?: string;
+  landmark?: string;
+  city: string;
+  pincode: string;
+} {
+  const lines = raw
+    .split(/[\n,]+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const pincodeMatch = raw.match(/\b(\d{6})\b/);
+  const pincode = pincodeMatch?.[1] ?? '000000';
+
+  // Try to extract city from "City – Pincode" or "City Pincode" pattern
+  let city = 'Unknown';
+  const cityLine = lines.find((l) => /\d{6}/.test(l));
+  if (cityLine) {
+    city = cityLine.replace(/[-–\s]*\d{6}.*/, '').trim() || 'Unknown';
+  }
+
+  const line1 = lines[1] ?? lines[0] ?? raw.slice(0, 200);
+  const line2 = lines.length > 3 ? lines[2] : undefined;
+  const landmark = lines.length > 2 ? lines[lines.length - 2] : undefined;
+
+  return { line1, line2, landmark, city, pincode };
 }
 
 export async function _testHelpers() {
-  // exported for type-safety
   void prisma;
 }

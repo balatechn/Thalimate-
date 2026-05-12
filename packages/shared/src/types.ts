@@ -47,4 +47,15 @@ export interface ConversationContext {
   addressId?: string;
   notes?: string;
   draftOrderId?: string;
+  couponCode?: string;
+  /** Ordered list of saved address IDs shown during AWAITING_ADDRESS_CHOICE */
+  savedAddressIds?: string[];
+}
+
+export interface SavedAddressLite {
+  id: string;
+  label?: string | null;
+  line1: string;
+  city: string;
+  pincode: string;
 }
