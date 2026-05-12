@@ -1,6 +1,6 @@
 import { prisma } from '@thalimate/db';
 import { notFound } from 'next/navigation';
-import MenuItemForm from '../../_components/MenuItemForm';
+import MenuItemForm from '../_components/MenuItemForm';
 
 export default async function EditMenuItemPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
