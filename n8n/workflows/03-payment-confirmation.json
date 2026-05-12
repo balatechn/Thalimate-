@@ -1,0 +1,97 @@
+{
+  "name": "ThaliMate — Payment Confirmation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "payment-webhook",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-payment",
+      "name": "Webhook: Payment",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Razorpay or UPI/custom payload to {orderCode, status, amount}\nconst body = $input.first().json;\nlet orderCode = body.orderCode || body.payload?.payment?.entity?.description || body.notes?.orderCode;\nlet status = 'PAID';\nlet amount = body.amount || body.payload?.payment?.entity?.amount;\nreturn [{ json: { orderCode, status, amount } }];"
+      },
+      "id": "normalize",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.orderCode }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ]
+        }
+      },
+      "id": "has-code",
+      "name": "Has orderCode?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.APP_URL }}/api/admin/orders/{{ $json.orderCode }}/status",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "status", "value": "PAID" },
+            { "name": "secret", "value": "={{ $env.N8N_INTERNAL_SECRET }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mark-paid",
+      "name": "Mark Order PAID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=💸 *Payment Received*\n\nOrder: `{{ $json.orderCode }}`\nAmount: ₹{{ ($json.amount / 100).toFixed(2) }}\nStatus: PAID ✅",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "id": "telegram-paid",
+      "name": "Telegram: Payment Received",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true }"
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1340, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Payment": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
+    "Normalize Payload": { "main": [[{ "node": "Has orderCode?", "type": "main", "index": 0 }]] },
+    "Has orderCode?": { "main": [[{ "node": "Mark Order PAID", "type": "main", "index": 0 }]] },
+    "Mark Order PAID": { "main": [[{ "node": "Telegram: Payment Received", "type": "main", "index": 0 }]] },
+    "Telegram: Payment Received": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateCredsSetupCompleted": false }
+}

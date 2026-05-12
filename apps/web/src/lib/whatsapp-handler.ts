@@ -54,9 +54,23 @@ export async function handleIncoming(msg: IncomingMessage): Promise<void> {
   const ctx = (conv.context as ConversationContext) ?? {};
   const plans = await prisma.mealPlan.findMany({ where: { active: true }, orderBy: { basePrice: 'asc' } });
 
+  // Resolve plan rules for the currently selected plan
+  let planRules: FsmInput['planRules'] | undefined;
+  if (ctx.planCode) {
+    const selectedPlan = plans.find((p) => p.code === ctx.planCode);
+    if (selectedPlan?.rules) {
+      const rules = selectedPlan.rules as Record<string, number>;
+      planRules = Object.fromEntries(
+        Object.entries(rules).map(([k, v]) => [k.toLowerCase(), v as number]),
+      );
+    }
+  }
+
+  // Build menu for any state that may transition into CUSTOMIZING (AWAITING_DIET)
+  // or that is already browsing (CUSTOMIZING, AWAITING_CONFIRMATION)
   let menuSections: FsmInput['menuSections'] | undefined;
-  if (fsmState === 'CUSTOMIZING' || fsmState === 'AWAITING_CONFIRMATION') {
-    menuSections = await buildMenuSections(ctx);
+  if (['AWAITING_DIET', 'CUSTOMIZING', 'AWAITING_CONFIRMATION'].includes(fsmState)) {
+    menuSections = await buildMenuSections(ctx, planRules);
   }
 
   const fsmInput: FsmInput = {
@@ -65,6 +79,7 @@ export async function handleIncoming(msg: IncomingMessage): Promise<void> {
     context: ctx,
     customerName: customer.name ?? undefined,
     menuSections,
+    planRules,
     plans: plans.map((p) => ({ id: p.id, code: p.code, name: p.name, basePrice: p.basePrice })),
   };
 
@@ -117,6 +132,9 @@ async function executeAction(out: FsmOutput, customer: Customer, conversationId:
         where: { id: conversationId },
         data: { context: ctx as object },
       });
+
+      // Send confirmation summary as a follow-up message
+      await sendConfirmationSummary(ctx, customer.phone, conversationId);
       break;
     }
 
@@ -219,7 +237,6 @@ async function createPaymentForOrder(orderId: string, customerPhone: string): Pr
   // Send QR image
   try {
     const png = await upiQrPngBuffer(upiUrl);
-    // Many WhatsApp providers need a URL; serve via /api/payments/qr/[code].png
     const qrUrl = `${process.env.APP_URL}/api/payments/qr/${order.code}.png`;
     await evo.sendImage(
       customerPhone,
@@ -227,12 +244,85 @@ async function createPaymentForOrder(orderId: string, customerPhone: string): Pr
       `Pay ₹${(order.total / 100).toFixed(2)} for order ${order.code}.\nUPI: ${process.env.UPI_VPA}`,
     );
     void png;
+    const { t } = await import('@thalimate/whatsapp');
+    await evo.sendText(customerPhone, t.paymentLink(order.total));
   } catch (err) {
     logger.error({ err }, 'failed to send UPI QR');
     await evo.sendText(
       customerPhone,
       `Pay ₹${(order.total / 100).toFixed(2)} via UPI to ${process.env.UPI_VPA}\nReference: ${order.code}`,
     );
+  }
+}
+
+/**
+ * Build and send the order confirmation summary message.
+ * Called after SAVE_ADDRESS so the customer sees a full summary before confirming.
+ */
+async function sendConfirmationSummary(
+  ctx: ConversationContext,
+  customerPhone: string,
+  conversationId: string,
+): Promise<void> {
+  try {
+    if (!ctx.planCode || !ctx.mealTime || !ctx.diet || !ctx.addressId) return;
+
+    const [plan, address] = await Promise.all([
+      prisma.mealPlan.findUnique({ where: { code: ctx.planCode } }),
+      prisma.address.findUnique({ where: { id: ctx.addressId } }),
+    ]);
+    if (!plan || !address) return;
+
+    const selections = ctx.selections ?? {};
+    const menuItemIds = Object.keys(selections);
+    if (menuItemIds.length === 0) return;
+
+    const menuItems = await prisma.menuItem.findMany({ where: { id: { in: menuItemIds } } });
+    const itemMap = new Map(menuItems.map((m) => [m.id, m]));
+
+    const planRules = (plan.rules as Record<string, number> | null) ?? {};
+    const catCount: Record<string, number> = {};
+    let extraPaise = 0;
+
+    const summaryItems: Array<{ name: string; qty: number; addonPrice?: number }> = [];
+    for (const [id, qty] of Object.entries(selections)) {
+      const item = itemMap.get(id);
+      if (!item) continue;
+      const cat = item.category.toLowerCase();
+      const freeAllowed = planRules[cat] ?? 0;
+      const alreadyUsed = catCount[cat] ?? 0;
+      const freeHere = Math.max(0, freeAllowed - alreadyUsed);
+      const paidQty = Math.max(0, qty - freeHere);
+      catCount[cat] = alreadyUsed + qty;
+      const addonCost = paidQty * item.price;
+      extraPaise += addonCost;
+      summaryItems.push({ name: item.name, qty, addonPrice: addonCost > 0 ? addonCost : undefined });
+    }
+
+    const total = plan.basePrice + extraPaise;
+    const addressStr = [address.line1, address.line2, address.landmark, address.city, address.pincode]
+      .filter(Boolean)
+      .join(', ');
+
+    const { t } = await import('@thalimate/whatsapp');
+    const msg = t.confirmation({
+      plan: plan.name,
+      diet: ctx.diet,
+      mealTime: ctx.mealTime,
+      items: summaryItems,
+      address: addressStr,
+      basePrice: plan.basePrice,
+      extraPrice: extraPaise,
+      total,
+    });
+
+    const evo = evolutionFromEnv();
+    const sent = await evo.sendText(customerPhone, msg);
+    await prisma.conversationMessage.create({
+      data: { conversationId, direction: 'OUT', body: msg, providerMsgId: sent.id },
+    });
+  } catch (err) {
+    logger.error({ err }, 'failed to send confirmation summary');
   }
 }
 
@@ -256,7 +346,10 @@ async function getOrCreateConvId(customerId: string): Promise<string> {
   return created.id;
 }
 
-async function buildMenuSections(ctx: ConversationContext): Promise<FsmInput['menuSections']> {
+async function buildMenuSections(
+  ctx: ConversationContext,
+  planRules?: Record<string, number>,
+): Promise<FsmInput['menuSections']> {
   const date = todayISTDateOnly();
   const mealTime = (ctx.mealTime ?? 'LUNCH') as MealTime;
   const diet = (ctx.diet ?? 'REGULAR') as DietType;
@@ -281,6 +374,7 @@ async function buildMenuSections(ctx: ConversationContext): Promise<FsmInput['me
     .filter((cat) => grouped.has(cat))
     .map((cat) => ({
       title: cat,
+      includedCount: planRules ? (planRules[cat.toLowerCase()] ?? 0) : undefined,
       items: (grouped.get(cat) ?? [])
         .filter((it) => !it.soldOut)
         .map((it) => ({

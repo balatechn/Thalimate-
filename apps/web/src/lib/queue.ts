@@ -31,6 +31,19 @@ export async function enqueueNotification(job: NotificationJob) {
     removeOnComplete: 1000,
     removeOnFail: 5000,
   });
+
+  // Fire-and-forget ping to n8n order-notification webhook
+  if (job.kind === 'order.created' || job.kind === 'order.paid') {
+    const n8nUrl = process.env.N8N_ORDER_WEBHOOK_URL;
+    const secret = process.env.N8N_INTERNAL_SECRET;
+    if (n8nUrl) {
+      fetch(n8nUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(secret ? { 'x-n8n-secret': secret } : {}) },
+        body: JSON.stringify(job),
+      }).catch(() => { /* non-critical */ });
+    }
+  }
 }
 
 // keep ts happy

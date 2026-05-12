@@ -20,15 +20,23 @@ export type FsmState =
   | 'AWAITING_PAYMENT'
   | 'COMPLETED';
 
+export interface MenuSection {
+  title: string;
+  items: Array<{ idx: number; id: string; name: string; price?: number }>;
+  includedCount?: number; // how many of this category are covered by the plan
+}
+
 export interface FsmInput {
   text: string;
   state: FsmState;
   context: ConversationContext;
   customerName?: string;
   /** Catalog data fetched by the caller for the current diet/mealtime */
-  menuSections?: Array<{ title: string; items: Array<{ idx: number; id: string; name: string; price?: number }> }>;
+  menuSections?: MenuSection[];
   /** Fetched plans (for plan selection) */
   plans?: Array<{ id: string; code: string; name: string; basePrice: number }>;
+  /** Rules of the selected plan — determines free vs add-on items */
+  planRules?: Record<string, number>; // category.toLowerCase() -> free qty
 }
 
 export interface FsmOutput {
@@ -44,7 +52,7 @@ export interface FsmOutput {
     | { kind: 'CAPTURE_FEEDBACK'; rating: number };
 }
 
-const TRIGGERS = /^(hi|hello|hey|menu|order|start)\b/i;
+const TRIGGERS = /^(hi|hello|hey|menu|order|start|thali)\b/i;
 
 export function handleMessage(input: FsmInput): FsmOutput {
   const text = (input.text ?? '').trim();
@@ -76,7 +84,7 @@ export function handleMessage(input: FsmInput): FsmOutput {
       return {
         nextState: 'AWAITING_PLAN',
         context: { ...context, mealTime },
-        reply: t.askPlan(),
+        reply: t.askPlan(input.plans ?? []),
       };
     }
 
@@ -84,7 +92,7 @@ export function handleMessage(input: FsmInput): FsmOutput {
       const idx = parseInt(lower, 10);
       const plans = input.plans ?? [];
       const plan = plans[idx - 1];
-      if (!plan) return reprompt(state, context, t.askPlan());
+      if (!plan) return reprompt(state, context, t.askPlan(plans));
       return {
         nextState: 'AWAITING_DIET',
         context: { ...context, planCode: plan.code },
@@ -107,9 +115,12 @@ export function handleMessage(input: FsmInput): FsmOutput {
 
     case 'CUSTOMIZING': {
       if (lower === 'back') {
-        return { nextState: 'AWAITING_PLAN', context: { ...context, selections: {} }, reply: t.askPlan() };
+        return { nextState: 'AWAITING_PLAN', context: { ...context, selections: {} }, reply: t.askPlan(input.plans ?? []) };
       }
       if (lower === 'done') {
+        if (!context.selections || Object.keys(context.selections).length === 0) {
+          return reprompt(state, context, 'Please select at least one item before typing *done*.');
+        }
         return {
           nextState: 'AWAITING_ADDRESS',
           context,
@@ -119,20 +130,24 @@ export function handleMessage(input: FsmInput): FsmOutput {
       const updates = parseSelections(text);
       if (!updates) return reprompt(state, context, 'Please reply with item numbers, e.g. `1,4,7` or `1x2,4`. Type *done* when finished.');
       const selections = { ...(context.selections ?? {}) };
-      // Map idx -> menuItemId via menuSections
-      const idToIdx = new Map<number, string>();
+      // Build idx -> {id, name, price, category} map
+      const idxMap = new Map<number, { id: string; name: string; price?: number; category: string }>();
       (input.menuSections ?? []).forEach((s) =>
-        s.items.forEach((i) => idToIdx.set(i.idx, i.id)),
+        s.items.forEach((i) => idxMap.set(i.idx, { id: i.id, name: i.name, price: i.price, category: s.title })),
       );
+      const addedNames: string[] = [];
       for (const [idx, qty] of updates) {
-        const id = idToIdx.get(idx);
-        if (!id) continue;
-        selections[id] = (selections[id] ?? 0) + qty;
+        const item = idxMap.get(idx);
+        if (!item) continue;
+        selections[item.id] = (selections[item.id] ?? 0) + qty;
+        addedNames.push(qty > 1 ? `${item.name} ×${qty}` : item.name);
       }
+      // Build running total with plan-rules awareness
+      const runningTotal = buildRunningTotal(selections, input.menuSections ?? [], input.planRules ?? {});
       return {
         nextState: 'CUSTOMIZING',
         context: { ...context, selections },
-        reply: `Added. Current items: ${Object.values(selections).reduce((a, b) => a + b, 0)}.\nType more numbers, *done* when finished, or *back* to change plan.`,
+        reply: t.selectionUpdate(addedNames, runningTotal.lines, runningTotal.extraPaise),
       };
     }
 
@@ -141,7 +156,7 @@ export function handleMessage(input: FsmInput): FsmOutput {
       return {
         nextState: 'AWAITING_CONFIRMATION',
         context: { ...context, notes: text },
-        reply: 'Got it. Preparing your order summary…',
+        reply: '✅ Got it! Preparing your order summary…',
         action: { kind: 'SAVE_ADDRESS', raw: text },
       };
     }
@@ -181,6 +196,39 @@ export function handleMessage(input: FsmInput): FsmOutput {
 
 function reprompt(state: FsmState, context: ConversationContext, msg: string): FsmOutput {
   return { nextState: state, context, reply: msg };
+}
+
+/** Compute running extra cost given current selections, menu sections, and plan rules. */
+function buildRunningTotal(
+  selections: Record<string, number>,
+  sections: MenuSection[],
+  planRules: Record<string, number>,
+): { lines: Array<{ name: string; qty: number; free: boolean }>; extraPaise: number } {
+  // Build id -> {name, price, category} lookup
+  const itemMap = new Map<string, { name: string; price: number; category: string }>();
+  sections.forEach((s) => s.items.forEach((i) => itemMap.set(i.id, { name: i.name, price: i.price ?? 0, category: s.title.toLowerCase() })));
+
+  // Count how many of each category have been selected
+  const catCount: Record<string, number> = {};
+  const lines: Array<{ name: string; qty: number; free: boolean }> = [];
+  let extraPaise = 0;
+
+  for (const [id, qty] of Object.entries(selections)) {
+    const item = itemMap.get(id);
+    if (!item || qty <= 0) continue;
+    const cat = item.category;
+    catCount[cat] = (catCount[cat] ?? 0);
+    const freeAllowed = planRules[cat] ?? 0;
+    const alreadyUsed = catCount[cat];
+    const freeHere = Math.max(0, freeAllowed - alreadyUsed);
+    const paidQty = Math.max(0, qty - freeHere);
+    catCount[cat] += qty;
+    const isFree = paidQty === 0 && item.price === 0;
+    extraPaise += paidQty * item.price;
+    lines.push({ name: item.name, qty, free: isFree });
+  }
+
+  return { lines, extraPaise };
 }
 
 function parseChoice(text: string, allowed: string[]): string | null {

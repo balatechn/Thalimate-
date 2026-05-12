@@ -1,0 +1,138 @@
+# Production stack for ThaliMate on VPS (187.127.134.246)
+#
+# ── Option A (RECOMMENDED if you move away from Coolify proxy) ──────────────
+# Run this on the VPS. Traefik handles SSL for all services.
+# Before starting: point your domain DNS A records to 187.127.134.246
+# Then: docker compose -f docker-compose.prod.yml up -d
+#
+# ── Option B (keep Coolify for the Next.js app) ──────────────────────────────
+# Only Evolution API and n8n are in this stack.
+# In Coolify, set EVOLUTION_URL + N8N_WEBHOOK_URL to the subdomains below.
+# The app (thalimate.example.com) remains managed by Coolify.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Subdomains used (replace example.com with your domain OR use sslip.io below):
+#   evo.187.127.134.246.sslip.io     → Evolution API
+#   n8n.187.127.134.246.sslip.io     → n8n
+#   app.187.127.134.246.sslip.io     → ThaliMate app  (Option A only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+networks:
+  proxy:
+    external: false
+  internal:
+    external: false
+
+volumes:
+  traefik-certs:
+  n8ndata:
+  evodata:
+
+services:
+
+  # ── Traefik v3 ──────────────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    networks: [proxy, internal]
+    ports:
+      - "80:80"       # HTTP (redirect to HTTPS + ACME challenge)
+      - "443:443"     # HTTPS
+      # Uncomment to expose Traefik dashboard (secure it in production!)
+      # - "8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certs:/certs
+    command:
+      - --api.dashboard=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=proxy
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http.tls.certresolver=letsencrypt
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@thalimate.local}
+      - --certificatesresolvers.letsencrypt.acme.storage=/certs/acme.json
+      - --log.level=WARN
+
+  # ── Evolution API ────────────────────────────────────────────────────────────
+  evolution:
+    image: atendai/evolution-api:latest
+    restart: unless-stopped
+    networks: [proxy, internal]
+    environment:
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: ${DATABASE_URL}
+      REDIS_URI: ${REDIS_URL}
+      # After address collection ThaliMate receives events here:
+      WEBHOOK_GLOBAL_URL: ${APP_URL}/api/webhooks/whatsapp
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_EVENTS_MESSAGES_UPSERT: "true"
+      WEBHOOK_EVENTS_CONNECTION_UPDATE: "true"
+    volumes:
+      - evodata:/evolution/instances
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.evolution.rule=Host(`${EVOLUTION_HOST:-evo.187.127.134.246.sslip.io}`)
+      - traefik.http.routers.evolution.entrypoints=websecure
+      - traefik.http.routers.evolution.tls.certresolver=letsencrypt
+      - traefik.http.services.evolution.loadbalancer.server.port=8080
+
+  # ── n8n ──────────────────────────────────────────────────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    networks: [proxy, internal]
+    environment:
+      N8N_HOST: ${N8N_HOST:-n8n.187.127.134.246.sslip.io}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://${N8N_HOST:-n8n.187.127.134.246.sslip.io}/
+      GENERIC_TIMEZONE: Asia/Kolkata
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      # Share these with the app so n8n can call back:
+      APP_URL: ${APP_URL}
+      N8N_INTERNAL_SECRET: ${N8N_INTERNAL_SECRET}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${POSTGRES_HOST:-postgres}
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-thalimate}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-thalimate}
+    volumes:
+      - n8ndata:/home/node/.n8n
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.n8n.rule=Host(`${N8N_HOST:-n8n.187.127.134.246.sslip.io}`)
+      - traefik.http.routers.n8n.entrypoints=websecure
+      - traefik.http.routers.n8n.tls.certresolver=letsencrypt
+      - traefik.http.services.n8n.loadbalancer.server.port=5678
+
+  # ── ThaliMate app (Option A only — remove if using Coolify for the app) ──────
+  # app:
+  #   image: ghcr.io/balatechn/thalimate-:latest
+  #   restart: unless-stopped
+  #   networks: [proxy, internal]
+  #   environment:
+  #     DATABASE_URL: ${DATABASE_URL}
+  #     REDIS_URL: ${REDIS_URL}
+  #     NEXTAUTH_URL: https://${APP_HOST:-app.187.127.134.246.sslip.io}
+  #     NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+  #     EVOLUTION_API_URL: http://evolution:8080
+  #     EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+  #     N8N_INTERNAL_SECRET: ${N8N_INTERNAL_SECRET}
+  #   labels:
+  #     - traefik.enable=true
+  #     - traefik.http.routers.app.rule=Host(`${APP_HOST:-app.187.127.134.246.sslip.io}`)
+  #     - traefik.http.routers.app.entrypoints=websecure
+  #     - traefik.http.routers.app.tls.certresolver=letsencrypt
+  #     - traefik.http.services.app.loadbalancer.server.port=3000
