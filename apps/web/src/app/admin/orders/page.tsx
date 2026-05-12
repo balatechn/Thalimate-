@@ -1,57 +1,72 @@
 import { prisma } from '@thalimate/db';
 import { formatINR, formatISTDate } from '@thalimate/shared';
-import { Badge } from '@/components/ui/badge';
+import { OrderStatusSelect } from '../_components/OrderStatusSelect';
+import type { OrderStatus } from '@thalimate/db';
 
-const STATUS_COLORS: Record<string, string> = {
-  PENDING_PAYMENT: 'bg-yellow-100 text-yellow-800',
-  PAID: 'bg-blue-100 text-blue-800',
-  PREPARING: 'bg-purple-100 text-purple-800',
-  READY: 'bg-indigo-100 text-indigo-800',
-  OUT_FOR_DELIVERY: 'bg-orange-100 text-orange-800',
-  DELIVERED: 'bg-green-100 text-green-800',
-  CANCELLED: 'bg-gray-100 text-gray-700',
-};
+export const dynamic = 'force-dynamic';
 
 export default async function OrdersPage() {
   const orders = await prisma.order.findMany({
-    include: { customer: true, plan: true, items: true },
+    include: { customer: true, plan: true, items: { include: { menuItem: true } }, address: true },
     orderBy: { createdAt: 'desc' },
     take: 100,
   });
 
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Orders</h1>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Orders</h1>
+          <p className="text-muted-foreground text-sm">Latest 100 orders. Status changes notify the customer via WhatsApp.</p>
+        </div>
+      </div>
       <div className="overflow-x-auto rounded-lg border">
         <table className="w-full text-sm">
           <thead className="border-b bg-muted/50">
             <tr className="text-left">
-              <th className="p-3">Order</th>
-              <th className="p-3">Customer</th>
-              <th className="p-3">Plan</th>
-              <th className="p-3">Items</th>
-              <th className="p-3">Total</th>
-              <th className="p-3">Status</th>
-              <th className="p-3">Time</th>
+              <th className="p-3 font-medium">Order</th>
+              <th className="p-3 font-medium">Customer</th>
+              <th className="p-3 font-medium">Plan</th>
+              <th className="p-3 font-medium">Meal</th>
+              <th className="p-3 font-medium">Items</th>
+              <th className="p-3 font-medium">Total</th>
+              <th className="p-3 font-medium">Status</th>
+              <th className="p-3 font-medium">Time</th>
             </tr>
           </thead>
           <tbody>
             {orders.map((o) => (
-              <tr key={o.id} className="border-b last:border-0">
+              <tr key={o.id} className="border-b last:border-0 hover:bg-muted/20">
                 <td className="p-3 font-mono text-xs">{o.code}</td>
-                <td className="p-3">{o.customer.name ?? o.customer.phone}</td>
-                <td className="p-3">{o.plan?.name ?? '-'}</td>
-                <td className="p-3">{o.items.length}</td>
+                <td className="p-3">
+                  <div>{o.customer.name ?? '—'}</div>
+                  <div className="text-xs text-muted-foreground">{o.customer.phone}</div>
+                </td>
+                <td className="p-3">{o.plan?.name ?? '—'}</td>
+                <td className="p-3 text-xs">
+                  <div>{o.mealTime}</div>
+                  <div className="text-muted-foreground">{o.diet}</div>
+                </td>
+                <td className="p-3">
+                  <div className="text-xs space-y-0.5">
+                    {o.items.slice(0, 3).map((it) => (
+                      <div key={it.id}>{it.name} ×{it.quantity}</div>
+                    ))}
+                    {o.items.length > 3 && (
+                      <div className="text-muted-foreground">+{o.items.length - 3} more</div>
+                    )}
+                  </div>
+                </td>
                 <td className="p-3 font-medium">{formatINR(o.total)}</td>
                 <td className="p-3">
-                  <Badge className={STATUS_COLORS[o.status] ?? ''}>{o.status}</Badge>
+                  <OrderStatusSelect orderCode={o.code} currentStatus={o.status as OrderStatus} />
                 </td>
-                <td className="p-3 text-muted-foreground">{formatISTDate(o.createdAt)}</td>
+                <td className="p-3 text-muted-foreground text-xs">{formatISTDate(o.createdAt, 'dd MMM, hh:mm a')}</td>
               </tr>
             ))}
             {orders.length === 0 && (
               <tr>
-                <td colSpan={7} className="p-8 text-center text-muted-foreground">
+                <td colSpan={8} className="p-8 text-center text-muted-foreground">
                   No orders yet.
                 </td>
               </tr>
